@@ -111,20 +111,7 @@ docker compose logs --tail=100 consumer2
 docker compose down
 ```
 
-## Публікація в GitHub
-```bash
-git init
-git add .
-git commit -m "Lab5: Kafka producer and consumers with Docker"
-git branch -M main
-git remote add origin https://github.com/VitaliyVY/LAB_5.git
-git push -u origin main
+
 ```
-
-## Що прикріпити в Moodle
-1. Посилання на GitHub-репозиторій.
-2. Скріншот Kafka UI (кластер online, 2 брокери, топіки).
-3. Скріншоти логів `producer`, `consumer1`, `consumer2`.
-
 ## Висновок
 У лабораторній роботі реалізовано повний цикл обробки подій у Kafka: зчитування даних з CSV, публікація подій у два топіки, споживання цих подій двома окремими споживачами та контейнеризований запуск усіх компонентів через Docker Compose.
