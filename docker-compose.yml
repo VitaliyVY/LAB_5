@@ -1,0 +1,119 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  broker1:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: broker1
+    depends_on:
+      - zookeeper
+    ports:
+      - "19092:19092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker1:9092,PLAINTEXT_HOST://localhost:19092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:19092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+  broker2:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: broker2
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker2:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka-init
+    depends_on:
+      - broker1
+      - broker2
+    command: >
+      bash -c "
+        echo 'Waiting for Kafka brokers...';
+        cub kafka-ready -b broker1:9092 1 40 &&
+        cub kafka-ready -b broker2:9092 1 40 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic Topic1 --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic Topic2 --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --list
+      "
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - broker1
+      - broker2
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: lab5-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:9092,broker2:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    container_name: producer
+    depends_on:
+      - kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
+      KAFKA_TOPIC_1: Topic1
+      KAFKA_TOPIC_2: Topic2
+      CSV_PATH: /app/data/Divvy_Trips_2019_Q4.csv
+      SEND_DELAY_SECONDS: 0.2
+      MAX_RECORDS: 200
+    volumes:
+      - ./Divvy_Trips_2019_Q4.csv:/app/data/Divvy_Trips_2019_Q4.csv:ro
+
+  consumer1:
+    build:
+      context: .
+      dockerfile: consumer1/Dockerfile
+    container_name: consumer1
+    depends_on:
+      - kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
+      KAFKA_TOPIC: Topic1
+      KAFKA_GROUP_ID: consumer-group-topic1
+
+  consumer2:
+    build:
+      context: .
+      dockerfile: consumer2/Dockerfile
+    container_name: consumer2
+    depends_on:
+      - kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
+      KAFKA_TOPIC: Topic2
+      KAFKA_GROUP_ID: consumer-group-topic2
+
+
