@@ -1,117 +1,113 @@
-﻿# Лабораторна робота №5
+# Лабораторна робота №5 (Kafka Streams, Java)
 
 ## Тема роботи
-Побудова системи обміну повідомленнями на базі Apache Kafka: продюсер, два топіки, два споживачі, запуск у Docker.
+Потокова обробка даних поїздок у Kafka Streams з агрегуванням за датою поїздки.
 
-## Мета роботи
-1. Створити Python-проєкт `producer`.
-2. Зчитувати дані з CSV-файлу та формувати подію для кожного запису.
-3. Публікувати кожну подію у два топіки: `Topic1` і `Topic2`.
-4. Розгорнути Kafka-кластер у Docker:
-- `Zookeeper`
-- `Broker1`
-- `Broker2`
-- `Kafka UI`
-5. Створити два Python-проєкти споживачів:
-- `consumer1` для `Topic1`
-- `consumer2` для `Topic2`
-6. Запускати всі компоненти через Docker Compose.
-7. Підготувати проєкт до здачі через GitHub.
+## Виконані етапи
+1. Створено Java-проєкт `streams-app` (Maven).
+2. Додано залежності для Kafka Streams (`org.apache.kafka:kafka-streams`).
+3. Реалізовано підписку на топік попередньої лабораторної (`Topic1`) і обчислення:
+   - середня тривалість поїздки на день;
+   - кількість поїздок на день;
+   - найпопулярніша початкова станція на день;
+   - топ-3 станції на день (враховано і `from_station_name`, і `to_station_name`).
+4. Кожен результат відправляється в окремий Kafka-топік.
 
-## Використані технології
-- Python 3.11
-- Бібліотека `kafka-python`
+## Технології
+- Java 17
+- Apache Kafka Streams
+- Maven
 - Docker, Docker Compose
-- Apache Kafka (Confluent images)
-- Kafka UI (Provectus)
+- Apache Kafka (Confluent)
+- Kafka UI
 
 ## Структура проєкту
 ```text
 Lab_5/
 ├─ docker-compose.yml
 ├─ Divvy_Trips_2019_Q4.csv
-├─ .gitignore
 ├─ README.md
 ├─ producer/
 │  ├─ Dockerfile
 │  ├─ requirements.txt
 │  └─ producer.py
-├─ consumer1/
+├─ streams-app/
 │  ├─ Dockerfile
-│  ├─ requirements.txt
-│  └─ consumer.py
-└─ consumer2/
-   ├─ Dockerfile
-   ├─ requirements.txt
-   └─ consumer.py
+│  ├─ pom.xml
+│  └─ src/main/java/com/lab5/streaming/TripStreamsApplication.java
+├─ consumer1/   (залишено з попередньої лабораторної)
+└─ consumer2/   (залишено з попередньої лабораторної)
 ```
 
-## Склад Kafka-кластера
-- `zookeeper`
-- `broker1`
-- `broker2`
-- `kafka-init` (автоматично створює `Topic1` і `Topic2`)
-- `kafka-ui` (інтерфейс: http://localhost:8080)
+## Топіки
+Вхідні:
+- `Topic1` (використовується Kafka Streams застосунком)
+- `Topic2` (залишився для сумісності з попередньою лабораторною)
 
-## Принцип роботи
-1. `producer` читає файл `Divvy_Trips_2019_Q4.csv`.
-2. Для кожного рядка створюється JSON-подія з полями:
-- `event_id`
-- `timestamp`
-- `payload` (вміст рядка CSV)
-3. Кожна подія відправляється одночасно в `Topic1` і `Topic2`.
-4. `consumer1` читає повідомлення з `Topic1` і виводить у консоль.
-5. `consumer2` читає повідомлення з `Topic2` і виводить у консоль.
+Вихідні (по одному на кожне обчислення):
+- `trip-avg-duration-by-day`
+- `trip-count-by-day`
+- `trip-top-start-station-by-day`
+- `trip-top3-stations-by-day`
 
-## Налаштування (env у Docker Compose)
+## Формат вхідного повідомлення
+`producer` надсилає JSON виду:
+```json
+{
+  "event_id": 1,
+  "timestamp": "2026-04-12T10:00:00Z",
+  "payload": {
+    "start_time": "2019-10-01 00:01:39",
+    "tripduration": "940.0",
+    "from_station_name": "Sheffield Ave & Kingsbury St",
+    "to_station_name": "Leavitt St & Armitage Ave"
+  }
+}
+```
+
+Агрегація виконується за датою з `payload.start_time` (`YYYY-MM-DD`).
+
+## Налаштування Kafka Streams сервісу
+Основні змінні середовища:
 - `KAFKA_BOOTSTRAP_SERVERS=broker1:9092,broker2:9092`
-- `KAFKA_TOPIC_1=Topic1`
-- `KAFKA_TOPIC_2=Topic2`
-- `KAFKA_TOPIC=Topic1` або `Topic2` для споживачів
-- `MAX_RECORDS=200` (для демонстрації, щоб не відправляти весь CSV)
-- `SEND_DELAY_SECONDS=0.2`
+- `STREAMS_APPLICATION_ID=lab5-trip-analytics-streams`
+- `INPUT_TOPIC=Topic1`
+- `AVG_DURATION_TOPIC=trip-avg-duration-by-day`
+- `TRIP_COUNT_TOPIC=trip-count-by-day`
+- `TOP_START_STATION_TOPIC=trip-top-start-station-by-day`
+- `TOP3_STATIONS_TOPIC=trip-top3-stations-by-day`
 
 ## Запуск
 ```bash
 docker compose up --build
 ```
 
-Запуск у фоновому режимі:
+Або у фоні:
 ```bash
 docker compose up -d --build
 ```
 
-## Перевірка результату
-1. Логи продюсера:
+## Перевірка результатів
+1. Переконатися, що продюсер надсилає повідомлення:
 ```bash
 docker compose logs --tail=100 producer
 ```
-Очікувано: `Sent event_id=... to Topic1 and Topic2`, потім `Completed. Total events sent: ...`
 
-2. Логи першого споживача:
+2. Перевірити роботу Kafka Streams:
 ```bash
-docker compose logs --tail=100 consumer1
+docker compose logs --tail=200 streams-processor
 ```
-Очікувано: повідомлення з `Topic1`.
 
-3. Логи другого споживача:
-```bash
-docker compose logs --tail=100 consumer2
-```
-Очікувано: повідомлення з `Topic2`.
+3. Відкрити Kafka UI: `http://localhost:8080` і перевірити, що в output-топіках з'являються повідомлення:
+- `trip-avg-duration-by-day`
+- `trip-count-by-day`
+- `trip-top-start-station-by-day`
+- `trip-top3-stations-by-day`
 
-4. Kafka UI (`http://localhost:8080`):
-- кластер `lab5-cluster` у стані `Online`
-- `Brokers count = 2`
-- наявні топіки `Topic1` і `Topic2`
-- у топіках є повідомлення
-
-## Зупинка проєкту
+## Зупинка
 ```bash
 docker compose down
 ```
 
-
-```
 ## Висновок
-У лабораторній роботі реалізовано повний цикл обробки подій у Kafka: зчитування даних з CSV, публікація подій у два топіки, споживання цих подій двома окремими споживачами та контейнеризований запуск усіх компонентів через Docker Compose.
+У проєкті реалізовано потокову Java-обробку даних поїздок на Kafka Streams з агрегуванням за датою та публікацією кожної метрики в окремий Kafka-топік.

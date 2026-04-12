@@ -59,6 +59,10 @@ services:
         cub kafka-ready -b broker2:9092 1 40 &&
         kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic Topic1 --partitions 2 --replication-factor 2 &&
         kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic Topic2 --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic trip-avg-duration-by-day --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic trip-count-by-day --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic trip-top-start-station-by-day --partitions 2 --replication-factor 2 &&
+        kafka-topics --bootstrap-server broker1:9092 --create --if-not-exists --topic trip-top3-stations-by-day --partitions 2 --replication-factor 2 &&
         kafka-topics --bootstrap-server broker1:9092 --list
       "
 
@@ -91,6 +95,22 @@ services:
       MAX_RECORDS: 200
     volumes:
       - ./Divvy_Trips_2019_Q4.csv:/app/data/Divvy_Trips_2019_Q4.csv:ro
+
+  streams-processor:
+    build:
+      context: .
+      dockerfile: streams-app/Dockerfile
+    container_name: streams-processor
+    depends_on:
+      - kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
+      STREAMS_APPLICATION_ID: lab5-trip-analytics-streams
+      INPUT_TOPIC: Topic1
+      AVG_DURATION_TOPIC: trip-avg-duration-by-day
+      TRIP_COUNT_TOPIC: trip-count-by-day
+      TOP_START_STATION_TOPIC: trip-top-start-station-by-day
+      TOP3_STATIONS_TOPIC: trip-top3-stations-by-day
 
   consumer1:
     build:
