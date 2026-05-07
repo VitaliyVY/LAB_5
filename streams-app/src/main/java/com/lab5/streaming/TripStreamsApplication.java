@@ -30,12 +30,14 @@ import java.util.Properties;
 public final class TripStreamsApplication {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Розділювач для складеного ключа "дата + станція", щоб безпечно групувати в Kafka.
     private static final String DAY_STATION_DELIMITER = "\u001F";
 
     private TripStreamsApplication() {
     }
 
     public static void main(String[] args) {
+        // Читаємо основні параметри з environment (або беремо значення за замовчуванням).
         String bootstrapServers = env("KAFKA_BOOTSTRAP_SERVERS", "broker1:9092,broker2:9092");
         String appId = env("STREAMS_APPLICATION_ID", "lab5-trip-analytics-streams");
 
@@ -46,6 +48,7 @@ public final class TripStreamsApplication {
         String top3StationsTopic = env("TOP3_STATIONS_TOPIC", "trip-top3-stations-by-day");
 
         Properties props = new Properties();
+        // Налаштування Kafka Streams клієнта.
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, appId);
         props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
@@ -56,9 +59,11 @@ public final class TripStreamsApplication {
         StreamsBuilder builder = new StreamsBuilder();
         buildTopology(builder, inputTopic, avgDurationTopic, tripCountTopic, topStartStationTopic, top3StationsTopic);
 
+        // Створюємо і запускаємо потоковий застосунок.
         KafkaStreams streams = new KafkaStreams(builder.build(), props);
         Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
 
+        // Якщо один stream-потік впаде, Kafka Streams створить новий потік.
         streams.setUncaughtExceptionHandler(throwable -> {
             System.err.println("[streams] Uncaught error: " + throwable.getMessage());
             return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.REPLACE_THREAD;
@@ -80,20 +85,24 @@ public final class TripStreamsApplication {
         JsonSerde<StationCount> stationCountSerde = new JsonSerde<>(StationCount.class);
         JsonSerde<TopStationsState> topStationsStateSerde = new JsonSerde<>(TopStationsState.class);
 
+        // 1) Читаємо raw JSON з вхідного топіка і перетворюємо у нормалізований TripRecord.
         KStream<String, TripRecord> trips = builder
             .stream(inputTopic, Consumed.with(stringSerde, stringSerde))
             .flatMapValues(TripStreamsApplication::parseTripRecord);
 
+        // 2) Кількість поїздок за день.
         KTable<String, Long> tripCountByDay = trips
             .map((key, trip) -> KeyValue.pair(trip.tripDay, 1L))
             .groupByKey(Grouped.with(stringSerde, longSerde))
             .count(Materialized.as("trip-count-by-day-store"));
 
+        // 3) Сума тривалостей за день.
         KTable<String, Long> durationSumByDay = trips
             .map((key, trip) -> KeyValue.pair(trip.tripDay, trip.durationSeconds))
             .groupByKey(Grouped.with(stringSerde, longSerde))
             .reduce(Long::sum, Materialized.as("duration-sum-by-day-store"));
 
+        // 4) Середня тривалість = сума / кількість.
         ValueJoiner<Long, Long, Double> averageDurationJoiner =
             (sumSeconds, tripCount) -> tripCount == 0 ? 0.0 : (double) sumSeconds / tripCount;
 
@@ -107,6 +116,7 @@ public final class TripStreamsApplication {
             )))
             .to(avgDurationTopic, Produced.with(stringSerde, stringSerde));
 
+        // Пишемо кількість поїздок у окремий output topic.
         tripCountByDay
             .toStream()
             .mapValues((day, count) -> toJson(Map.of(
@@ -115,11 +125,13 @@ public final class TripStreamsApplication {
             )))
             .to(tripCountTopic, Produced.with(stringSerde, stringSerde));
 
+        // 5) Рахуємо кількість стартів по кожній станції в межах дня.
         KTable<String, Long> startStationCountByDay = trips
             .map((key, trip) -> KeyValue.pair(compositeDayStationKey(trip.tripDay, trip.fromStation), 1L))
             .groupByKey(Grouped.with(stringSerde, longSerde))
             .count(Materialized.as("start-station-count-by-day-store"));
 
+        // З усіх станцій дня обираємо найпопулярнішу.
         KTable<String, StationCount> topStartStationByDay = startStationCountByDay
             .toStream()
             .map((dayStationKey, count) -> {
@@ -138,6 +150,7 @@ public final class TripStreamsApplication {
             )))
             .to(topStartStationTopic, Produced.with(stringSerde, stringSerde));
 
+        // 6) Для ТОП-3 враховуємо обидві точки: і старт, і фініш.
         KStream<String, StationCount> stationCountsByDayUpdates = trips
             .flatMap((key, trip) -> List.of(
                 KeyValue.pair(compositeDayStationKey(trip.tripDay, trip.fromStation), 1L),
@@ -151,6 +164,7 @@ public final class TripStreamsApplication {
                 return KeyValue.pair(dayStation.day, new StationCount(dayStation.station, count));
             });
 
+        // Агрегуємо всі станції дня у map: {station -> count}.
         KTable<String, TopStationsState> top3StationsByDay = stationCountsByDayUpdates
             .groupByKey(Grouped.with(stringSerde, stationCountSerde))
             .aggregate(
@@ -159,6 +173,7 @@ public final class TripStreamsApplication {
                 Materialized.with(stringSerde, topStationsStateSerde)
             );
 
+        // Формуємо JSON з трійкою лідерів.
         top3StationsByDay
             .toStream()
             .mapValues((day, state) -> toJson(Map.of(
@@ -168,6 +183,8 @@ public final class TripStreamsApplication {
             .to(top3StationsTopic, Produced.with(stringSerde, stringSerde));
     }
 
+    // Парсимо повідомлення від producer:
+    // беремо payload і дістаємо поля, потрібні для агрегацій.
     private static List<TripRecord> parseTripRecord(String rawEventJson) {
         try {
             JsonNode root = MAPPER.readTree(rawEventJson);
@@ -181,10 +198,12 @@ public final class TripStreamsApplication {
             String toStation = payload.path("to_station_name").asText("").trim();
             double tripDuration = payload.path("tripduration").asDouble(-1.0);
 
+            // Якщо немає обов'язкових полів, запис ігноруємо.
             if (startTime.length() < 10 || fromStation.isEmpty() || toStation.isEmpty() || tripDuration < 0) {
                 return List.of();
             }
 
+            // Групуємо по даті початку поїздки (YYYY-MM-DD).
             String day = startTime.substring(0, 10);
             long durationSeconds = Math.round(tripDuration);
             return List.of(new TripRecord(day, durationSeconds, fromStation, toStation));
@@ -193,10 +212,12 @@ public final class TripStreamsApplication {
         }
     }
 
+    // Створюємо технічний ключ "дата + станція", щоб зручно групувати.
     private static String compositeDayStationKey(String day, String station) {
         return day + DAY_STATION_DELIMITER + station;
     }
 
+    // Розбиваємо технічний ключ назад на дату і назву станції.
     private static DayStation splitCompositeDayStationKey(String value) {
         int separator = value.indexOf(DAY_STATION_DELIMITER);
         if (separator < 0) {
@@ -207,6 +228,8 @@ public final class TripStreamsApplication {
         return new DayStation(day, station);
     }
 
+    // Вибір лідера: більший count кращий.
+    // При однаковому count беремо станцію за алфавітом (стабільний результат).
     private static StationCount maxStationCount(StationCount current, StationCount incoming) {
         if (incoming.count > current.count) {
             return incoming;
@@ -277,11 +300,13 @@ public final class TripStreamsApplication {
         public TopStationsState() {
         }
 
+        // Оновлюємо (або додаємо) поточну кількість для станції.
         TopStationsState withStationCount(String station, long count) {
             stationCounts.put(station, count);
             return this;
         }
 
+        // Повертаємо топ-3 станції: сортуємо за count (спадання), далі за назвою.
         List<Map<String, Object>> top3AsList() {
             return stationCounts.entrySet()
                 .stream()
@@ -308,6 +333,7 @@ public final class TripStreamsApplication {
             this.clazz = clazz;
         }
 
+        // Кастомний JSON serializer для стану в state stores / repartition.
         @Override
         public Serializer<T> serializer() {
             return (topic, data) -> {
@@ -322,6 +348,7 @@ public final class TripStreamsApplication {
             };
         }
 
+        // Кастомний JSON deserializer для читання стану.
         @Override
         public Deserializer<T> deserializer() {
             return (topic, data) -> {

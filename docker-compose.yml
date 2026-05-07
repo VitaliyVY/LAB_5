@@ -2,6 +2,8 @@ services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: zookeeper
+    networks:
+      - local-iceberg-lakehouse
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -13,6 +15,8 @@ services:
     container_name: broker1
     depends_on:
       - zookeeper
+    networks:
+      - local-iceberg-lakehouse
     ports:
       - "19092:19092"
     environment:
@@ -32,6 +36,8 @@ services:
     container_name: broker2
     depends_on:
       - zookeeper
+    networks:
+      - local-iceberg-lakehouse
     ports:
       - "29092:29092"
     environment:
@@ -52,6 +58,8 @@ services:
     depends_on:
       - broker1
       - broker2
+    networks:
+      - local-iceberg-lakehouse
     command: >
       bash -c "
         echo 'Waiting for Kafka brokers...';
@@ -72,8 +80,10 @@ services:
     depends_on:
       - broker1
       - broker2
+    networks:
+      - local-iceberg-lakehouse
     ports:
-      - "8080:8080"
+      - "8088:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: lab5-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:9092,broker2:9092
@@ -86,6 +96,8 @@ services:
     container_name: producer
     depends_on:
       - kafka-init
+    networks:
+      - local-iceberg-lakehouse
     environment:
       KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
       KAFKA_TOPIC_1: Topic1
@@ -103,6 +115,8 @@ services:
     container_name: streams-processor
     depends_on:
       - kafka-init
+    networks:
+      - local-iceberg-lakehouse
     environment:
       KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
       STREAMS_APPLICATION_ID: lab5-trip-analytics-streams
@@ -119,6 +133,8 @@ services:
     container_name: consumer1
     depends_on:
       - kafka-init
+    networks:
+      - local-iceberg-lakehouse
     environment:
       KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
       KAFKA_TOPIC: Topic1
@@ -131,9 +147,101 @@ services:
     container_name: consumer2
     depends_on:
       - kafka-init
+    networks:
+      - local-iceberg-lakehouse
     environment:
       KAFKA_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
       KAFKA_TOPIC: Topic2
       KAFKA_GROUP_ID: consumer-group-topic2
+
+  polaris:
+    image: apache/polaris:latest
+    container_name: polaris
+    platform: linux/amd64
+    depends_on:
+      - minio
+      - minio-client
+    ports:
+      - "8181:8181"
+      - "8182:8182"
+    networks:
+      - local-iceberg-lakehouse
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ENDPOINT_URL_STS: http://minio:9000
+      POLARIS_BOOTSTRAP_CREDENTIALS: default-realm,root,secret
+      polaris.features.DROP_WITH_PURGE_ENABLED: "true"
+      polaris.realm-context.realms: default-realm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8182/q/health/ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    depends_on:
+      polaris:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      TRINO_JVM_OPTS: -Xmx2G
+    networks:
+      - local-iceberg-lakehouse
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+      - ./trino/demo-iceberg.sql:/etc/trino/demo-iceberg.sql:ro
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    volumes:
+      - ./minio_data:/data
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+      MINIO_DOMAIN: minio
+    networks:
+      local-iceberg-lakehouse:
+        aliases:
+          - warehouse.minio
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  minio-client:
+    image: minio/mc:latest
+    container_name: minio-client
+    depends_on:
+      - minio
+    networks:
+      - local-iceberg-lakehouse
+    volumes:
+      - /tmp:/tmp
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+    entrypoint: >
+      /bin/sh -c "
+      until (mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      mc rm -r --force minio/warehouse;
+      mc mb minio/warehouse;
+      mc anonymous set public minio/warehouse;
+      tail -f /dev/null
+      "
+
+networks:
+  local-iceberg-lakehouse:
+    name: local-iceberg-lakehouse
 
 
